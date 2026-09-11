@@ -27,8 +27,8 @@
 #define DEFAULT_MQTT_TOPIC_PREFIX "MESHCORE"
 
 // WiFi Settings
-#define DEFAULT_WIFI_SSID "yoursid"
-#define DEFAULT_WIFI_PASSWORD "yourpassword"
+#define DEFAULT_WIFI_SSID "your_wifi_ssid"
+#define DEFAULT_WIFI_PASSWORD "your_wifi_password"
 
 // Pin definitions for ESP32-S3 with E22-400M30S (SX1268)
 #define LORA_SCK 10
@@ -39,6 +39,11 @@
 #define LORA_DIO0 8
 #define LORA_DIO1 8
 #define LORA_BUSY 14
+
+// LED Pin definitions
+#define LED_LINK_PIN  4   // Green  - WiFi/MQTT link status
+#define LED_DATA_PIN  5   // Yellow - Data activity
+#define LED_PWR_PIN   6   // Red    - Power / system status
 
 // Configuration structures
 struct WiFiConfig {

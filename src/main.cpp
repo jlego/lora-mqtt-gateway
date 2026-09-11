@@ -76,6 +76,12 @@ bool configMode = false;
 bool radioInitialized = false;
 volatile bool packetReceived = false;
 
+// LED state
+static unsigned long dataLedOffAt = 0;
+static const unsigned long DATA_LED_FLASH_MS = 80;
+static bool linkLedState = false;
+static unsigned long linkLedToggleAt = 0;
+
 // Discovery / Neighbour tracking
 static NeighborInfo neighbors[16];
 static size_t neighborCount = 0;
@@ -142,6 +148,7 @@ void checkSerialInput();
 void publishStats();
 void publishNeighbours();
 void blinkLED();
+void flashDataLED();
 void setRadioFlag();
 void exitConfigMode();
 void sendAdvert();
@@ -160,6 +167,14 @@ void setup()
 {
     Serial.begin(115200);
     delay(1000);
+
+    // Initialize LED pins
+    pinMode(LED_LINK_PIN, OUTPUT);
+    pinMode(LED_DATA_PIN, OUTPUT);
+    pinMode(LED_PWR_PIN, OUTPUT);
+    digitalWrite(LED_LINK_PIN, LOW);
+    digitalWrite(LED_DATA_PIN, LOW);
+    digitalWrite(LED_PWR_PIN, HIGH);
 
     // Initialize settings manager
     if (!settingsManager.begin())
@@ -235,6 +250,7 @@ void setup()
         mqttHandler->setMessageCallback([](const uint8_t *payload, size_t length)
                                         {
             Serial.printf("Forwarding MQTT message to LoRa (%d bytes)\n", length);
+            flashDataLED();
             sendLoRaPacket(payload, length); });
 
         if (mqttHandler->begin())
@@ -481,6 +497,7 @@ void handleLoRaReceive()
 
             Serial.printf("📥 RX SUCCESS: %d bytes, RSSI=%d dBm, SNR=%.1f dB\n", length, rssi, snr);
             packetsReceived++;
+            flashDataLED();
 
             // Handle the packet
             handleLoRaPacket(buffer, length, rssi, snr);
@@ -706,6 +723,7 @@ bool sendLoRaPacket(const uint8_t *data, size_t length)
     if (state == RADIOLIB_ERR_NONE)
     {
         packetsSent++;
+        flashDataLED();
         Serial.println("   ✓ Sent successfully");
 
         // Put radio back into receive mode
@@ -826,13 +844,70 @@ void publishNeighbours()
     }
 }
 
+void flashDataLED()
+{
+    digitalWrite(LED_DATA_PIN, HIGH);
+    dataLedOffAt = millis() + DATA_LED_FLASH_MS;
+}
+
 void blinkLED()
 {
-    // TODO: Add LED blinking based on status
-    // - Slow blink: Normal operation
-    // - Fast blink: WiFi connecting
-    // - Solid: MQTT connected
-    // You can use the built-in LED or an external LED
+    unsigned long now = millis();
+
+    // --- PWR LED (Red) ---
+    // Solid ON = normal; fast blink = error (radio not initialized)
+    if (radioInitialized)
+    {
+        digitalWrite(LED_PWR_PIN, HIGH);
+    }
+    else
+    {
+        static unsigned long pwrToggleAt = 0;
+        if (now - pwrToggleAt > 200)
+        {
+            pwrToggleAt = now;
+            digitalWrite(LED_PWR_PIN, !digitalRead(LED_PWR_PIN));
+        }
+    }
+
+    // --- LINK LED (Green) ---
+    if (!config.wifi.enabled)
+    {
+        digitalWrite(LED_LINK_PIN, LOW);
+    }
+    else if (WiFi.status() != WL_CONNECTED)
+    {
+        // WiFi connecting: fast blink 200ms
+        if (now - linkLedToggleAt > 200)
+        {
+            linkLedToggleAt = now;
+            linkLedState = !linkLedState;
+            digitalWrite(LED_LINK_PIN, linkLedState ? HIGH : LOW);
+        }
+    }
+    else if (mqttHandler && mqttHandler->isConnected())
+    {
+        // WiFi + MQTT connected: solid ON
+        digitalWrite(LED_LINK_PIN, HIGH);
+    }
+    else
+    {
+        // WiFi connected but MQTT not: slow blink 1000ms
+        if (now - linkLedToggleAt > 1000)
+        {
+            linkLedToggleAt = now;
+            linkLedState = !linkLedState;
+            digitalWrite(LED_LINK_PIN, linkLedState ? HIGH : LOW);
+        }
+    }
+
+    // --- DATA LED (Yellow) ---
+    // Auto-off after flash duration; flash is triggered by flashDataLED()
+    if (dataLedOffAt > 0 && now >= dataLedOffAt)
+    {
+        dataLedOffAt = 0;
+        digitalWrite(LED_DATA_PIN, LOW);
+    }
 }
 
 void sendAdvert()
