@@ -93,6 +93,34 @@ public:
         prefs.putString("clk_ntp", config.clock.ntpServer);
         prefs.putShort("clk_tz", config.clock.timezoneMinutes);
         prefs.putBool("clk_auto", config.clock.autoSync);
+
+        // RS485
+        prefs.putUInt("rs485_baud", config.rs485.baudRate);
+        prefs.putBool("rs485_en", config.rs485.enabled);
+        prefs.putBool("rs485_br_lora", config.rs485.bridgeToLora);
+        prefs.putBool("rs485_br_mqtt", config.rs485.bridgeToMqtt);
+        prefs.putBool("rs485_br_flora", config.rs485.bridgeFromLora);
+        prefs.putBool("rs485_modbus", config.rs485.modbusEnabled);
+        prefs.putUShort("rs485_modbus_iv", config.rs485.modbusPollIntervalMs);
+
+        // Modbus poll entries
+        prefs.putUChar("mb_poll_cnt", config.modbusPollCount);
+        for (uint8_t i = 0; i < config.modbusPollCount && i < MODBUS_MAX_POLLS; ++i)
+        {
+            char prefix[16];
+            snprintf(prefix, sizeof(prefix), "mb%02u_", i);
+            char key[32];
+            snprintf(key, sizeof(key), "%ssid", prefix);
+            prefs.putUChar(key, config.modbusPolls[i].slaveId);
+            snprintf(key, sizeof(key), "%sfc", prefix);
+            prefs.putUChar(key, config.modbusPolls[i].functionCode);
+            snprintf(key, sizeof(key), "%ssr", prefix);
+            prefs.putUShort(key, config.modbusPolls[i].startReg);
+            snprintf(key, sizeof(key), "%src", prefix);
+            prefs.putUShort(key, config.modbusPolls[i].regCount);
+            snprintf(key, sizeof(key), "%slbl", prefix);
+            prefs.putString(key, config.modbusPolls[i].label);
+        }
         
         prefs.end();
         return true;
@@ -232,6 +260,45 @@ public:
         config.clock.ntpServer[sizeof(config.clock.ntpServer) - 1] = '\0';
         config.clock.timezoneMinutes = prefs.getShort("clk_tz", 0);
         config.clock.autoSync = prefs.getBool("clk_auto", true);
+
+        // RS485
+        config.rs485.baudRate = prefs.getUInt("rs485_baud", DEFAULT_RS485_BAUD);
+        config.rs485.enabled = prefs.getBool("rs485_en", true);
+        config.rs485.bridgeToLora = prefs.getBool("rs485_br_lora", true);
+        config.rs485.bridgeToMqtt = prefs.getBool("rs485_br_mqtt", true);
+        config.rs485.bridgeFromLora = prefs.getBool("rs485_br_flora", true);
+        config.rs485.modbusEnabled = prefs.getBool("rs485_modbus", false);
+        config.rs485.modbusPollIntervalMs = prefs.getUShort("rs485_modbus_iv", 5000);
+
+        // Modbus poll entries
+        config.modbusPollCount = prefs.getUChar("mb_poll_cnt", 0);
+        if (config.modbusPollCount > MODBUS_MAX_POLLS)
+            config.modbusPollCount = MODBUS_MAX_POLLS;
+        for (uint8_t i = 0; i < config.modbusPollCount; ++i)
+        {
+            char prefix[16];
+            snprintf(prefix, sizeof(prefix), "mb%02u_", i);
+            char key[32];
+            snprintf(key, sizeof(key), "%ssid", prefix);
+            config.modbusPolls[i].slaveId = prefs.getUChar(key, 0);
+            snprintf(key, sizeof(key), "%sfc", prefix);
+            config.modbusPolls[i].functionCode = prefs.getUChar(key, 0x03);
+            snprintf(key, sizeof(key), "%ssr", prefix);
+            config.modbusPolls[i].startReg = prefs.getUShort(key, 0);
+            snprintf(key, sizeof(key), "%src", prefix);
+            config.modbusPolls[i].regCount = prefs.getUShort(key, 1);
+            snprintf(key, sizeof(key), "%slbl", prefix);
+            strncpy(config.modbusPolls[i].label, prefs.getString(key, "").c_str(), sizeof(config.modbusPolls[i].label) - 1);
+            config.modbusPolls[i].label[sizeof(config.modbusPolls[i].label) - 1] = '\0';
+        }
+        for (uint8_t i = config.modbusPollCount; i < MODBUS_MAX_POLLS; ++i)
+        {
+            config.modbusPolls[i].slaveId = 0;
+            config.modbusPolls[i].functionCode = 0x03;
+            config.modbusPolls[i].startReg = 0;
+            config.modbusPolls[i].regCount = 1;
+            config.modbusPolls[i].label[0] = '\0';
+        }
         
         // Ensure MQTT Client ID follows the repeater node name
         deriveClientIdFromNodeName(config.repeater.nodeName, config.mqtt.clientId, sizeof(config.mqtt.clientId));
@@ -251,4 +318,3 @@ private:
 };
 
 #endif // SETTINGS_MANAGER_H
-

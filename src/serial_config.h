@@ -22,7 +22,7 @@ public:
     
     void begin() {
         Serial.println(F("\n╔════════════════════════════════════════════════════════╗"));
-        Serial.println(F("║    MeshCore MQTT Gateway - Configuration Menu         ║"));
+        Serial.println(F("║    MeshCore MQTT Gateway - Configuration Menu          ║"));
         Serial.println(F("╚════════════════════════════════════════════════════════╝"));
     }
     
@@ -100,6 +100,8 @@ public:
         Serial.println(F("│ 13. Clock Sync                                         │"));
         Serial.println(F("│ 14. Neighbours                                         │"));
         Serial.println(F("│ 15. Telemetry                                          │"));
+        Serial.println(F("│ 16. RS485 Settings                                     │"));
+        Serial.println(F("│ 17. Modbus RTU Settings                                │"));
         Serial.println(F("└────────────────────────────────────────────────────────┘"));
         Serial.print(F("\nEnter choice: "));
     }
@@ -128,6 +130,8 @@ public:
                 case 13: configureClock(); break;
                 case 14: showNeighbours(); break;
                 case 15: showTelemetry(); break;
+                case 16: configureRS485(); break;
+                case 17: configureModbus(); break;
                 case 0:
                     exitConfig();
                     if (onExitCallback) onExitCallback();
@@ -548,6 +552,229 @@ private:
         Serial.println(F("✓ Repeater configuration updated"));
     }
     
+    void configureRS485() {
+        Serial.println(F("\n┌── RS485 Configuration ─────────────────────────────────┐"));
+        
+        config.rs485.enabled = readBool("Enable RS485 (y/n)", config.rs485.enabled);
+        
+        if (config.rs485.enabled) {
+            static const char* BAUD_OPTIONS[] = {
+                "1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200"
+            };
+            static const uint32_t BAUD_VALUES[] = {
+                1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200
+            };
+            Serial.println(F("Baud Rate:"));
+            for (size_t i = 0; i < sizeof(BAUD_OPTIONS)/sizeof(BAUD_OPTIONS[0]); ++i) {
+                Serial.printf("  %zu) %s%s\n", i + 1, BAUD_OPTIONS[i],
+                    BAUD_VALUES[i] == config.rs485.baudRate ? " (current)" : "");
+            }
+            Serial.printf("Select [current: %u]: ", (unsigned)config.rs485.baudRate);
+            while (!Serial.available()) delay(10);
+            String input = readLineRaw();
+            if (input.length() > 0) {
+                int sel = input.toInt();
+                if (sel >= 1 && sel <= (int)(sizeof(BAUD_VALUES)/sizeof(BAUD_VALUES[0]))) {
+                    config.rs485.baudRate = BAUD_VALUES[sel - 1];
+                }
+            }
+            Serial.printf("Baud rate set to: %u\n", (unsigned)config.rs485.baudRate);
+
+            if (!config.rs485.modbusEnabled) {
+                config.rs485.bridgeToLora = readBool("Bridge RS485 RX → LoRa TX (y/n)", config.rs485.bridgeToLora);
+                config.rs485.bridgeToMqtt = readBool("Bridge RS485 RX → MQTT publish (y/n)", config.rs485.bridgeToMqtt);
+                config.rs485.bridgeFromLora = readBool("Bridge LoRa RX → RS485 TX (y/n)", config.rs485.bridgeFromLora);
+            } else {
+                Serial.println(F("⚠ Bridge options disabled (Modbus RTU mode is active)"));
+                Serial.println(F("   Modbus data is forwarded to MQTT automatically"));
+            }
+
+            config.rs485.modbusEnabled = readBool("Enable Modbus RTU Master (y/n)", config.rs485.modbusEnabled);
+
+            if (config.rs485.modbusEnabled) {
+                config.rs485.modbusPollIntervalMs = (uint16_t)readInt("Poll interval (ms)", config.rs485.modbusPollIntervalMs);
+                Serial.println(F("\n⚠ Restart required for RS485/Modbus changes to take effect"));
+            }
+        }
+        
+        Serial.println(F("└────────────────────────────────────────────────────────┘"));
+        Serial.println(F("✓ RS485 configuration updated"));
+    }
+    
+    void configureModbus() {
+        if (!config.rs485.enabled) {
+            Serial.println(F("\n⚠ RS485 is disabled. Enable RS485 first (menu 16)."));
+            return;
+        }
+        if (!config.rs485.modbusEnabled) {
+            Serial.println(F("\n⚠ Modbus RTU is disabled. Enable it in RS485 settings (menu 16) first."));
+            return;
+        }
+        
+        Serial.println(F("\n┌── Modbus RTU Poll Configuration ───────────────────────┐"));
+        Serial.printf("Current poll entries: %u / %u\n", (unsigned)config.modbusPollCount, (unsigned)MODBUS_MAX_POLLS);
+        
+        if (config.modbusPollCount > 0) {
+            Serial.println(F("\nExisting entries:"));
+            for (uint8_t i = 0; i < config.modbusPollCount; ++i) {
+                const ModbusPollEntry &e = config.modbusPolls[i];
+                Serial.printf("  [%d] Slave %d, FC 0x%02X, Reg %d, Count %d",
+                    i + 1, e.slaveId, e.functionCode, e.startReg, e.regCount);
+                if (e.label[0] != '\0') Serial.printf(", Label: \"%s\"", e.label);
+                Serial.println();
+            }
+        }
+        
+        Serial.println(F("\nOptions:"));
+        Serial.println(F("  1) Add new poll entry"));
+        Serial.println(F("  2) Edit existing entry"));
+        Serial.println(F("  3) Delete entry"));
+        Serial.println(F("  4) Clear all entries"));
+        Serial.println(F("  0) Back"));
+        Serial.print(F("Select: "));
+        while (!Serial.available()) delay(10);
+        String input = readLineRaw();
+        int choice = input.toInt();
+        
+        switch (choice) {
+            case 1: addModbusPollEntry(); break;
+            case 2: editModbusPollEntry(); break;
+            case 3: deleteModbusPollEntry(); break;
+            case 4: clearModbusPollEntries(); break;
+            default: break;
+        }
+        
+        Serial.println(F("└────────────────────────────────────────────────────────┘"));
+    }
+    
+    void addModbusPollEntry() {
+        if (config.modbusPollCount >= MODBUS_MAX_POLLS) {
+            Serial.printf("⚠ Maximum %u entries reached\n", (unsigned)MODBUS_MAX_POLLS);
+            return;
+        }
+        
+        Serial.println(F("\n── Add New Modbus Poll Entry ──"));
+        ModbusPollEntry &e = config.modbusPolls[config.modbusPollCount];
+        
+        e.slaveId = (uint8_t)readInt("Slave ID (1-247)", e.slaveId > 0 ? e.slaveId : 1);
+        if (e.slaveId == 0) e.slaveId = 1;
+        
+        static const char* FC_OPTIONS[] = { "03 - Read Holding Registers", "04 - Read Input Registers" };
+        static const uint8_t FC_VALUES[] = { 0x03, 0x04 };
+        Serial.println(F("Function Code:"));
+        for (size_t i = 0; i < 2; ++i) {
+            Serial.printf("  %zu) %s\n", i + 1, FC_OPTIONS[i]);
+        }
+        Serial.printf("Select [current: 0x%02X]: ", e.functionCode);
+        while (!Serial.available()) delay(10);
+        String fcInput = readLineRaw();
+        if (fcInput.length() > 0) {
+            int fcSel = fcInput.toInt();
+            if (fcSel >= 1 && fcSel <= 2) e.functionCode = FC_VALUES[fcSel - 1];
+        }
+        
+        e.startReg = (uint16_t)readInt("Start Register", e.startReg);
+        e.regCount = (uint16_t)readInt("Register Count", e.regCount > 0 ? e.regCount : 1);
+        if (e.regCount == 0) e.regCount = 1;
+        
+        String label = readLine("Label (optional)", String(e.label));
+        strncpy(e.label, label.c_str(), sizeof(e.label) - 1);
+        e.label[sizeof(e.label) - 1] = '\0';
+        
+        config.modbusPollCount++;
+        Serial.printf("✓ Entry #%u added (Slave %d, FC 0x%02X, Reg %d, Cnt %d)\n",
+            (unsigned)config.modbusPollCount, e.slaveId, e.functionCode, e.startReg, e.regCount);
+    }
+    
+    void editModbusPollEntry() {
+        if (config.modbusPollCount == 0) {
+            Serial.println(F("No entries to edit"));
+            return;
+        }
+        
+        int idx = readInt("Entry number to edit", 1) - 1;
+        if (idx < 0 || idx >= (int)config.modbusPollCount) {
+            Serial.println(F("Invalid entry number"));
+            return;
+        }
+        
+        ModbusPollEntry &e = config.modbusPolls[idx];
+        Serial.printf("Editing entry #%d:\n", idx + 1);
+        
+        e.slaveId = (uint8_t)readInt("Slave ID (1-247)", e.slaveId);
+        if (e.slaveId == 0) e.slaveId = 1;
+        
+        static const char* FC_OPTIONS[] = { "03 - Read Holding Registers", "04 - Read Input Registers" };
+        static const uint8_t FC_VALUES[] = { 0x03, 0x04 };
+        Serial.println(F("Function Code:"));
+        for (size_t i = 0; i < 2; ++i) {
+            Serial.printf("  %zu) %s\n", i + 1, FC_OPTIONS[i]);
+        }
+        Serial.printf("Select [current: 0x%02X]: ", e.functionCode);
+        while (!Serial.available()) delay(10);
+        String fcInput = readLineRaw();
+        if (fcInput.length() > 0) {
+            int fcSel = fcInput.toInt();
+            if (fcSel >= 1 && fcSel <= 2) e.functionCode = FC_VALUES[fcSel - 1];
+        }
+        
+        e.startReg = (uint16_t)readInt("Start Register", e.startReg);
+        e.regCount = (uint16_t)readInt("Register Count", e.regCount);
+        if (e.regCount == 0) e.regCount = 1;
+        
+        String label = readLine("Label (optional)", String(e.label));
+        strncpy(e.label, label.c_str(), sizeof(e.label) - 1);
+        e.label[sizeof(e.label) - 1] = '\0';
+        
+        Serial.println(F("✓ Entry updated"));
+    }
+    
+    void deleteModbusPollEntry() {
+        if (config.modbusPollCount == 0) {
+            Serial.println(F("No entries to delete"));
+            return;
+        }
+        
+        int idx = readInt("Entry number to delete", 1) - 1;
+        if (idx < 0 || idx >= (int)config.modbusPollCount) {
+            Serial.println(F("Invalid entry number"));
+            return;
+        }
+        
+        for (uint8_t i = idx; i < config.modbusPollCount - 1; ++i) {
+            config.modbusPolls[i] = config.modbusPolls[i + 1];
+        }
+        config.modbusPollCount--;
+        
+        ModbusPollEntry &last = config.modbusPolls[config.modbusPollCount];
+        last.slaveId = 0;
+        last.functionCode = 0x03;
+        last.startReg = 0;
+        last.regCount = 1;
+        last.label[0] = '\0';
+        
+        Serial.println(F("✓ Entry deleted"));
+    }
+    
+    void clearModbusPollEntries() {
+        bool confirm = readBool("Clear all Modbus poll entries (y/n)", false);
+        if (!confirm) {
+            Serial.println(F("Cancelled"));
+            return;
+        }
+        
+        config.modbusPollCount = 0;
+        for (size_t i = 0; i < MODBUS_MAX_POLLS; ++i) {
+            config.modbusPolls[i].slaveId = 0;
+            config.modbusPolls[i].functionCode = 0x03;
+            config.modbusPolls[i].startReg = 0;
+            config.modbusPolls[i].regCount = 1;
+            config.modbusPolls[i].label[0] = '\0';
+        }
+        
+        Serial.println(F("✓ All Modbus poll entries cleared"));
+    }
+    
     void showConfiguration() {
         Serial.println(F("\n╔════════════════════════════════════════════════════════╗"));
         Serial.println(F("║ CURRENT CONFIGURATION                                  ║"));
@@ -615,6 +842,28 @@ private:
         Serial.printf("║   NTP Server: %-42s ║\n", config.clock.ntpServer);
         Serial.printf("║   Timezone (min): %-38d ║\n", (int)config.clock.timezoneMinutes);
         Serial.printf("║   Auto Sync: %-43s ║\n", config.clock.autoSync ? "Yes" : "No");
+        
+        // RS485
+        Serial.println(F("╠════════════════════════════════════════════════════════╣"));
+        Serial.println(F("║ RS485 Settings:                                        ║"));
+        Serial.printf("║   Enabled: %-43s ║\n", config.rs485.enabled ? "Yes" : "No");
+        Serial.printf("║   Baud Rate: %-42u ║\n", (unsigned)config.rs485.baudRate);
+        Serial.printf("║   Bridge to LoRa: %-37s ║\n", config.rs485.bridgeToLora ? "Yes" : "No");
+        Serial.printf("║   Bridge to MQTT: %-37s ║\n", config.rs485.bridgeToMqtt ? "Yes" : "No");
+        Serial.printf("║   Bridge from LoRa: %-35s ║\n", config.rs485.bridgeFromLora ? "Yes" : "No");
+        Serial.printf("║   Modbus RTU: %-41s ║\n", config.rs485.modbusEnabled ? "Enabled" : "Disabled");
+        if (config.rs485.modbusEnabled) {
+            Serial.printf("║   Poll Interval: %-38u ms ║\n", (unsigned)config.rs485.modbusPollIntervalMs);
+            Serial.printf("║   Poll Entries: %-39u ║\n", (unsigned)config.modbusPollCount);
+            for (uint8_t i = 0; i < config.modbusPollCount; ++i) {
+                const ModbusPollEntry &e = config.modbusPolls[i];
+                Serial.printf("║     [%d] Slave %d FC 0x%02X Reg %d Cnt %d", i + 1, e.slaveId, e.functionCode, e.startReg, e.regCount);
+                if (e.label[0] != '\0') {
+                    Serial.printf(" \"%s\"", e.label);
+                }
+                Serial.println(F("      ║"));
+            }
+        }
         
         Serial.println(F("╚════════════════════════════════════════════════════════╝"));
     }
@@ -743,4 +992,3 @@ private:
 };
 
 #endif // SERIAL_CONFIG_H
-

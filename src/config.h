@@ -45,6 +45,15 @@
 #define LED_DATA_PIN  5   // Yellow - Data activity
 #define LED_PWR_PIN   6   // Red    - Power / system status
 
+// RS485 Pin definitions (SP3485EEN)
+#define RS485_TX_PIN  43   // DI  - MCU TX → RS485 DI
+#define RS485_RX_PIN  44  // RO  - RS485 RO → MCU RX
+#define RS485_DE_PIN  2   // DE  - Driver Enable  (active HIGH)
+#define RS485_RE_PIN  1   // RE  - Receiver Enable (active LOW)
+
+// Default RS485 Settings
+#define DEFAULT_RS485_BAUD 9600
+
 // Configuration structures
 struct WiFiConfig {
     char ssid[64];
@@ -120,6 +129,26 @@ struct ClockConfig {
     bool autoSync;           // sync at boot when WiFi is up
 };
 
+struct RS485Config {
+    uint32_t baudRate;
+    bool enabled;
+    bool bridgeToLora;
+    bool bridgeToMqtt;
+    bool bridgeFromLora;
+    bool modbusEnabled;
+    uint16_t modbusPollIntervalMs;
+};
+
+struct ModbusPollEntry {
+    uint8_t slaveId;
+    uint8_t functionCode;
+    uint16_t startReg;
+    uint16_t regCount;
+    char label[32];
+};
+
+static const size_t MODBUS_MAX_POLLS = 8;
+
 // Neighbor tracking for discovery
 struct NeighborInfo {
     uint32_t nodeId;
@@ -142,6 +171,9 @@ struct GatewayConfig {
     DiscoveryConfig discovery;
     LocationConfig location;
     ClockConfig clock;
+    RS485Config rs485;
+    ModbusPollEntry modbusPolls[MODBUS_MAX_POLLS];
+    uint8_t modbusPollCount;
 };
 
 // Derive a safe MQTT Client ID from the repeater node name
@@ -270,6 +302,26 @@ inline GatewayConfig getDefaultConfig() {
     strncpy(config.clock.ntpServer, "pool.ntp.org", sizeof(config.clock.ntpServer));
     config.clock.timezoneMinutes = 0; // UTC
     config.clock.autoSync = true;
+
+    // RS485 defaults
+    config.rs485.baudRate = DEFAULT_RS485_BAUD;
+    config.rs485.enabled = true;
+    config.rs485.bridgeToLora = false;
+    config.rs485.bridgeToMqtt = true;
+    config.rs485.bridgeFromLora = false;
+    config.rs485.modbusEnabled = false;
+    config.rs485.modbusPollIntervalMs = 5000;
+
+    // Modbus poll entries defaults
+    config.modbusPollCount = 0;
+    for (size_t i = 0; i < MODBUS_MAX_POLLS; ++i)
+    {
+        config.modbusPolls[i].slaveId = 0;
+        config.modbusPolls[i].functionCode = 0x03;
+        config.modbusPolls[i].startReg = 0;
+        config.modbusPolls[i].regCount = 1;
+        config.modbusPolls[i].label[0] = '\0';
+    }
     
     return config;
 }

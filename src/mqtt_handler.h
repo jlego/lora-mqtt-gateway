@@ -107,6 +107,10 @@ public:
     bool isConnected() {
         return mqttClient.connected();
     }
+
+    PubSubClient& getMqttClient() {
+        return mqttClient;
+    }
     
     // Publish raw LoRa packet
     void publishRawPacket(const uint8_t* data, size_t length, int rssi, float snr) {
@@ -667,4 +671,3 @@ private:
 };
 
 #endif // MQTT_HANDLER_H
-

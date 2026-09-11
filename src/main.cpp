@@ -24,6 +24,8 @@
 #include "settings_manager.h"
 #include "mqtt_handler.h"
 #include "serial_config.h"
+#include "rs485_handler.h"
+#include "modbus_handler.h"
 
 // LoRa radio object - SX1268 for E22-400M30S
 // Use FSPI (SPI2_HOST) dedicated for LoRa
@@ -59,12 +61,18 @@ GatewayConfig config;
 SettingsManager settingsManager;
 MQTTHandler *mqttHandler = nullptr;
 ConfigMenu *serialConfig = nullptr;
+RS485Handler *rs485Handler = nullptr;
+ModbusHandler *modbusHandler = nullptr;
 
 // Statistics
 uint32_t packetsReceived = 0;
 uint32_t packetsSent = 0;
 uint32_t packetsForwarded = 0;
 uint32_t packetsFailed = 0;
+uint32_t rs485PacketsRx = 0;
+uint32_t rs485PacketsTx = 0;
+uint32_t modbusPollCount = 0;
+uint32_t modbusErrorCount = 0;
 
 // Timing
 unsigned long lastStatsPublish = 0;
@@ -150,6 +158,7 @@ void publishNeighbours();
 void blinkLED();
 void flashDataLED();
 void setRadioFlag();
+void handleRS485Receive();
 void exitConfigMode();
 void sendAdvert();
 void printTelemetryToSerial();
@@ -232,6 +241,8 @@ void setup()
     }
     printBoxLine(String("WiFi:      ") + (config.wifi.enabled ? "Enabled" : "Disabled"));
     printBoxLine(String("MQTT:      ") + (config.mqtt.enabled ? "Enabled" : "Disabled"));
+    printBoxLine(String("RS485:     ") + (config.rs485.enabled ? "Enabled" : "Disabled"));
+    printBoxLine(String("Modbus:    ") + (config.rs485.modbusEnabled ? "Enabled" : "Disabled"));
     Serial.println(F("└────────────────────────────────────────────────────────┘"));
     Serial.println();
 
@@ -268,6 +279,45 @@ void setup()
         Serial.println(F("⚠ MQTT disabled (WiFi or MQTT not enabled in config)"));
     }
 
+    // Setup RS485 if enabled
+    if (config.rs485.enabled)
+    {
+        if (config.rs485.modbusEnabled)
+        {
+            Serial.println(F("\nInitializing RS485 (Modbus RTU Master)..."));
+            modbusHandler = new ModbusHandler(config);
+            if (modbusHandler->begin())
+            {
+                Serial.println(F("✓ Modbus RTU initialized"));
+            }
+            else
+            {
+                Serial.println(F("✗ Modbus RTU initialization failed"));
+                delete modbusHandler;
+                modbusHandler = nullptr;
+            }
+        }
+        else
+        {
+            Serial.println(F("\nInitializing RS485 (raw bridge)..."));
+            rs485Handler = new RS485Handler(config);
+            if (rs485Handler->begin())
+            {
+                Serial.println(F("✓ RS485 initialized"));
+            }
+            else
+            {
+                Serial.println(F("✗ RS485 initialization failed"));
+                delete rs485Handler;
+                rs485Handler = nullptr;
+            }
+        }
+    }
+    else
+    {
+        Serial.println(F("⚠ RS485 disabled"));
+    }
+
     // Setup serial configuration interface
     serialConfig = new ConfigMenu(config, settingsManager);
     serialConfig->setOnExitCallback(exitConfigMode);
@@ -300,6 +350,26 @@ void loop()
         if (mqttHandler)
         {
             mqttHandler->loop();
+        }
+
+        // Handle RS485 / Modbus
+        if (modbusHandler)
+        {
+            modbusHandler->loop();
+            if (modbusHandler->hasResult() && mqttHandler && mqttHandler->isConnected())
+            {
+                String json = modbusHandler->consumeResult();
+                char topic[128];
+                snprintf(topic, sizeof(topic), "%s/modbus", config.mqtt.topicPrefix);
+                mqttHandler->getMqttClient().publish(topic, json.c_str(), false);
+                modbusPollCount++;
+                flashDataLED();
+            }
+        }
+        else if (rs485Handler)
+        {
+            rs485Handler->loop();
+            handleRS485Receive();
         }
     }
 
@@ -682,6 +752,14 @@ void handleLoRaPacket(uint8_t *data, size_t length, int rssi, float snr)
         packetsForwarded++;
     }
 
+    // Forward to RS485 if enabled and bridging from LoRa
+    if (rs485Handler && config.rs485.bridgeFromLora)
+    {
+        rs485Handler->send(data, length);
+        rs485PacketsTx++;
+        Serial.printf("   → Forwarded to RS485 (%d bytes)\n", length);
+    }
+
     // Optional: Repeat packet if configured as repeater
     // This is a simple repeater - just retransmit what we receive
     // In a real mesh implementation, you'd check hop count, routing, etc.
@@ -844,6 +922,49 @@ void publishNeighbours()
     }
 }
 
+void handleRS485Receive()
+{
+    if (!rs485Handler || !rs485Handler->hasData())
+        return;
+
+    uint8_t buf[256];
+    size_t len = rs485Handler->readData(buf, sizeof(buf));
+    if (len == 0)
+        return;
+
+    rs485PacketsRx++;
+    flashDataLED();
+
+    Serial.printf("\n🔌 RS485 RX: %d bytes\n", len);
+    Serial.print("   Data: ");
+    for (size_t i = 0; i < min(len, (size_t)32); i++)
+    {
+        Serial.printf("%02X ", buf[i]);
+    }
+    if (len > 32)
+        Serial.print("...");
+    Serial.println();
+
+    // Bridge RS485 → LoRa
+    if (config.rs485.bridgeToLora)
+    {
+        if (sendLoRaPacket(buf, len))
+        {
+            Serial.println("   → Forwarded to LoRa");
+        }
+    }
+
+    // Bridge RS485 → MQTT
+    if (config.rs485.bridgeToMqtt && mqttHandler && mqttHandler->isConnected())
+    {
+        if (config.mqtt.publishRaw)
+        {
+            mqttHandler->publishRawPacket(buf, len, 0, 0.0f);
+        }
+        Serial.println("   → Forwarded to MQTT");
+    }
+}
+
 void flashDataLED()
 {
     digitalWrite(LED_DATA_PIN, HIGH);
@@ -942,6 +1063,16 @@ void printTelemetryToSerial()
     {
         Serial.printf("WiFi RSSI:        %-36d \n", WiFi.RSSI());
         Serial.printf("IP Address:       %-36s \n", WiFi.localIP().toString().c_str());
+    }
+    if (rs485Handler)
+    {
+        Serial.printf("RS485 RX:         %-36lu \n", rs485PacketsRx);
+        Serial.printf("RS485 TX:         %-36lu \n", rs485PacketsTx);
+    }
+    if (modbusHandler)
+    {
+        Serial.printf("Modbus Polls OK:  %-36lu \n", modbusPollCount);
+        Serial.printf("Modbus Errors:    %-36lu \n", modbusErrorCount);
     }
 }
 
