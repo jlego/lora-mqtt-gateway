@@ -27,8 +27,8 @@
 #define DEFAULT_MQTT_TOPIC_PREFIX "MESHCORE"
 
 // WiFi Settings
-#define DEFAULT_WIFI_SSID "Xiaomi_4D90"
-#define DEFAULT_WIFI_PASSWORD "zry88zry88"
+#define DEFAULT_WIFI_SSID "yoursid"
+#define DEFAULT_WIFI_PASSWORD "yourpassword"
 
 // Pin definitions for ESP32-S3 with E22-400M30S (SX1268)
 #define LORA_SCK 10
@@ -203,7 +203,7 @@ inline GatewayConfig getDefaultConfig() {
     // WiFi defaults
     strncpy(config.wifi.ssid, DEFAULT_WIFI_SSID, sizeof(config.wifi.ssid));
     strncpy(config.wifi.password, DEFAULT_WIFI_PASSWORD, sizeof(config.wifi.password));
-    config.wifi.enabled = false;
+    config.wifi.enabled = true;
     
     // MQTT defaults
     strncpy(config.mqtt.server, DEFAULT_MQTT_SERVER, sizeof(config.mqtt.server));
@@ -217,7 +217,7 @@ inline GatewayConfig getDefaultConfig() {
     deriveTopicPrefix(config.mqtt, config.mqtt.topicPrefix, sizeof(config.mqtt.topicPrefix));
     config.mqtt.useTLS = true;
     config.mqtt.insecureTLS = false;
-    config.mqtt.enabled = false;
+    config.mqtt.enabled = true;
     config.mqtt.publishRaw = true;
     config.mqtt.publishDecoded = true;
     config.mqtt.subscribeCommands = true;
