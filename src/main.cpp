@@ -831,6 +831,7 @@ void checkSerialInput()
         case 'c':
         case 'C':
             configMode = true;
+            if (mqttHandler) mqttHandler->suspend();
             serialConfig->showMainMenu();
             break;
 
@@ -1102,6 +1103,7 @@ void printNeighboursToSerial()
 void exitConfigMode()
 {
     configMode = false;
+    if (mqttHandler) mqttHandler->resume();
     Serial.println(F("\n✓ Exited configuration mode"));
 
     // Restart if configuration changed significantly

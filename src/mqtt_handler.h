@@ -30,10 +30,14 @@ public:
 #else
         , wifiClient(), secureClient(), mqttClient(wifiClient)
 #endif
-        , lastReconnectAttempt(0), messageCallback(nullptr) {}
+        , lastReconnectAttempt(0), messageCallback(nullptr), suspended(false) {}
     
     bool begin() {
         if (!config.mqtt.enabled) {
+            return false;
+        }
+
+        if (strcmp(config.mqtt.server, DEFAULT_MQTT_SERVER) == 0) {
             return false;
         }
 
@@ -82,8 +86,11 @@ public:
     }
     
     void loop() {
+        if (suspended) return;
+
 #ifndef USE_ETHERNET
         if (WiFi.status() != WL_CONNECTED) {
+            if (strcmp(config.wifi.ssid, DEFAULT_WIFI_SSID) == 0) return;
             Serial.println(F("WiFi disconnected, reconnecting..."));
             connectWiFi();
             return;
@@ -92,6 +99,7 @@ public:
         
         // Handle MQTT reconnection
         if (!mqttClient.connected()) {
+            if (strcmp(config.mqtt.server, DEFAULT_MQTT_SERVER) == 0) return;
             unsigned long now = millis();
             if (now - lastReconnectAttempt > 5000) {
                 lastReconnectAttempt = now;
@@ -102,6 +110,33 @@ public:
         } else {
             mqttClient.loop();
         }
+    }
+
+    void suspend() {
+        if (suspended) return;
+        suspended = true;
+        if (mqttClient.connected()) {
+            mqttClient.disconnect();
+        }
+#ifndef USE_ETHERNET
+        WiFi.disconnect(true);
+        WiFi.mode(WIFI_OFF);
+#endif
+        Serial.println(F("⚠ WiFi/MQTT suspended (config mode)"));
+    }
+
+    void resume() {
+        if (!suspended) return;
+        suspended = false;
+#ifndef USE_ETHERNET
+        if (config.wifi.enabled && strcmp(config.mqtt.server, DEFAULT_MQTT_SERVER) != 0) {
+            WiFi.mode(WIFI_STA);
+            if (connectWiFi()) {
+                connectMQTT();
+            }
+        }
+#endif
+        Serial.println(F("✓ WiFi/MQTT resumed"));
     }
     
     bool isConnected() {
@@ -329,6 +364,7 @@ private:
     PubSubClient mqttClient;
     unsigned long lastReconnectAttempt;
     MQTTMessageCallback messageCallback;
+    bool suspended;
     
     bool connectWiFi() {
 #ifdef USE_ETHERNET
@@ -336,6 +372,10 @@ private:
 #else
         if (WiFi.status() == WL_CONNECTED) {
             return true;
+        }
+
+        if (strcmp(config.wifi.ssid, DEFAULT_WIFI_SSID) == 0) {
+            return false;
         }
         
         Serial.print(F("\nConnecting to WiFi: "));
